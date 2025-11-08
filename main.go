@@ -28,11 +28,16 @@ import (
 )
 
 const (
+	RecordPeriod        = 1 * time.Second
+	RecordCount         = 100 //
 	QueueLength         = 100
 	FullChannelBehavior = watch.DropIfChannelFull
 	Namespace           = "keg"
 	ResourceName        = "keg"
 	ReportingController = "kubernetes-event-generator"
+	EventReason         = "ProactiveGenerate"
+	EventType           = "Normal"
+	EventAction         = "No"
 )
 
 func main() {
@@ -139,33 +144,36 @@ func main() {
 		}
 
 		// Start event generation loop
-		ticker := time.NewTicker(1 * time.Second)
+		ticker := time.NewTicker(RecordPeriod)
 		defer ticker.Stop()
 		for {
-			klog.Info(2)
 			select {
 			case <-ticker.C:
-				timestamp := metav1.NewMicroTime(time.Now())
-				event := &eventsv1.Event{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      util.GenerateEventName(ref.Name, timestamp.UnixNano()),
-						Namespace: cm.GetNamespace(),
-					},
-					EventTime:           timestamp,
-					Series:              nil,
-					Regarding:           *ref,
-					ReportingController: ReportingController,
-					ReportingInstance:   ReportingController + "-" + hostname,
-					Reason:              "ProactiveGenerate",
-					Type:                "Normal",
-					Action:              "No",
-				}
-				err = broadcaster.Action(watch.Added, event)
-				if err != nil {
-					klog.Warningf("broadcast event, err: %v", err)
-					continue
+				for range RecordCount {
+					timestamp := metav1.NewMicroTime(time.Now())
+					event := &eventsv1.Event{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      util.GenerateEventName(ref.Name, timestamp.UnixNano()),
+							Namespace: cm.GetNamespace(),
+						},
+						EventTime:           timestamp,
+						Series:              nil,
+						Regarding:           *ref,
+						ReportingController: ReportingController,
+						ReportingInstance:   ReportingController + "-" + hostname,
+						Reason:              EventReason,
+						Type:                EventType,
+						Action:              EventAction,
+					}
+					err = broadcaster.Action(watch.Added, event)
+					if err != nil {
+						klog.Warningf("broadcast event, err: %v", err)
+						continue
+					}
 				}
 			case <-ctx.Done():
+				stop()
+				watcher.Stop()
 				return
 			}
 		}
@@ -175,7 +183,6 @@ func main() {
 	sem := semaphore.NewWeighted(int64(maxWorkers))
 
 	eventSink := events.EventSinkImpl{Interface: clientset.EventsV1()}
-	klog.Info(int64(maxWorkers))
 	for event := range watcher.ResultChan() {
 		if err = sem.Acquire(ctx, 1); err != nil {
 			klog.Errorf("acquire semaphore, err: %v", err)
@@ -200,5 +207,4 @@ func main() {
 	if err != nil {
 		klog.Errorf("acquire semaphore, err: %v", err)
 	}
-	stop()
 }
